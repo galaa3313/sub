@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="mn">
+<head>
+<!-- Хуудасны тохиргоо: тэмдэгтийн кодчилол, гар утасны харагдац -->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Монгол субтитр / Ярианы танилт</title>
+<style>
+/* Ерөнхий загвар: фонт, фон, өнгө */
+body { font-family: system-ui, sans-serif; background: #1b1b1f; color: #eee; margin: 0; padding: 16px; }
+/* Агуулгын хязгаарлагч: хамгийн их өргөн, төвд байрлуулах */
+.wrap { max-width: 760px; margin: 0 auto; }
+/* Карт хэлбэрийн хэсгүүд */
+.card { background: #26262c; border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+/* Товч загвар */
+button { background: #4a6cf7; color: #fff; border: 0; border-radius: 8px; padding: 10px 14px; margin: 4px 4px 4px 0; font-size: 15px; cursor: pointer; }
+/* Идэвхгүй товч */
+button:disabled { background: #555; cursor: not-allowed; }
+/* Текст оруулах талбар */
+textarea { width: 100%; min-height: 180px; background: #111; color: #eee; border: 1px solid #444; border-radius: 8px; padding: 10px; font-size: 16px; box-sizing: border-box; }
+/* Монгол гарын товчлуурын хэсэг */
+.keys { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.keys button { min-width: 38px; padding: 8px 6px; margin: 0; background: #3a3a44; }
+/* Төлөвийн мөр */
+.status { font-size: 14px; color: #aaa; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- Гарчиг -->
+  <h2>Монгол субтитр / Ярианы танилт</h2>
+  <p class="status">Эхний ачаалалт дээр загвар татагдана (нэг удаа). Дараа нь интернетгүй ажиллана.</p>
+
+  <!-- 1. Файл сонгох хэсэг -->
+  <div class="card">
+    <b>1. Видео эсвэл аудио сонгох</b><br>
+    <!-- Файл оруулах хэсэг: видео/аудио -->
+    <input type="file" id="fileInput" accept="video/*,audio/*">
+    <br><br>
+    <!-- Микрофоноос шууд бичих товч -->
+    <button id="recBtn">🎙 Дуу бичих</button>
+    <!-- Дууны түвшний хэмжигч: дуу орж байгааг харуулна -->
+    <div style="height:10px;background:#111;border-radius:5px;margin-top:8px;">
+      <div id="meterBar" style="height:100%;width:0%;background:#4a6cf7;border-radius:5px;"></div>
+    </div>
+    <!-- Бичлэгийн явсан хугацаа -->
+    <div class="status" id="timer"></div>
+  </div>
+
+  <!-- 2. Тохиргоо: хэл, загвар -->
+  <div class="card">
+    <b>2. Тохиргоо</b><br>
+    <!-- Ярианы хэл -->
+    <select id="lang">
+      <option value="mn">Монгол</option>
+      <option value="en">English (текст)</option>
+      <!-- Англи яриа → монгол орчуулга (NLLB) -->
+      <option value="en2mn">English → Монгол орчуулга</option>
+    </select>
+    <!-- Загварын хэмжээ: чанар ба хурд -->
+    <select id="model">
+      <option value="Xenova/whisper-tiny">tiny (хурдан, сул)</option>
+      <option value="Xenova/whisper-base">base</option>
+      <option value="Xenova/whisper-small" selected>small (санал болгож буй утсанд)</option>
+      <option value="Xenova/whisper-medium">medium (PC-д сайн)</option>
+    </select>
+    <br><br>
+    <!-- Боловсруулах товчүүд: тохиргоотой нэг картанд байрлана -->
+    <b>Боловсруулах</b><br>
+    <button id="runBtn" disabled>Субтитр гаргах</button>
+    <button id="dlBtn" disabled>SRT татах</button>
+    <!-- Текстийг дуугаар уншуулах товч -->
+    <button id="speakBtn">🔊 Уншуулах</button>
+    <div class="status" id="status">Файл сонгоогүй байна.</div>
+  </div>
+
+  <!-- 4. Гаралтын текст -->
+  <div class="card">
+    <b>3. Текст (засаж болно)</b>
+    <!-- Танигдсан текст энд гарна, гараар засаж болно -->
+    <textarea id="output" placeholder="Энд текст гарна..."></textarea>
+
+    <!-- Монгол кирилл гарын товчлуурууд -->
+    <div class="keys" id="mnKeys"></div>
+  </div>
+
+</div>
+
+<!-- Transformers.js (Whisper) -->
+<script type="module">
+// Transformers.js сан: Whisper загварыг браузер дээр ажиллуулна
+import { pipeline, env } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3";
+
+// Загварыг браузерын кэшид хадгалж, дараа нь интернетгүй ажиллуулах
+env.useBrowserCache = true;
+
+// DOM элементүүдийг авах
+const fileInput = document.getElementById("fileInput");
+const runBtn = document.getElementById("runBtn");
+const dlBtn = document.getElementById("dlBtn");
+const output = document.getElementById("output");
+const statusEl = document.getElementById("status");
+const langEl = document.getElementById("lang");
+const modelEl = document.getElementById("model");
+
+// Сонгосон файл болон танигдсан сегментүүдийг хадгалах хувьсагч
+let selectedFile = null;
+let segments = [];
+let transcriber = null;
+let loadedModel = null;
+
+// Төлөв харуулах функц
+function setStatus(msg) {
+  // Төлөвийн текстийг шинэчлэх
+  statusEl.textContent = msg;
+}
+
+// Файл сонгогдох үед
+fileInput.addEventListener("change", () => {
+  // Сонгосон файлыг авах
+  selectedFile = fileInput.files[0] || null;
+  // Файл байвал товчийг идэвхжүүлэх
+  runBtn.disabled = !selectedFile;
+  setStatus(selectedFile ? `Сонгосон: ${selectedFile.name}` : "Файл сонгоогүй байна.");
+});
+
+// Загвар ачаалах (сонгосон загвараар)
+async function loadModel(modelName) {
+  // Өмнөх загвартай адил бол дахин ачаалах шаардлагагүй
+  if (transcriber && loadedModel === modelName) return transcriber;
+  setStatus("Загвар ачаалж байна (эхний удаа интернет хэрэгтэй)...");
+  // Whisper автомат яриа таних pipeline үүсгэх
+  transcriber = await pipeline("automatic-speech-recognition", modelName, {
+    // Прогресс мэдээллийг статус дээр харуулах
+    progress_callback: (p) => {
+      if (p.status === "progress") setStatus(`Загвар татаж байна: ${Math.round(p.progress)}%`);
+    },
+  });
+  // Ачаалсан загварын нэрийг хадгалах
+  loadedModel = modelName;
+  return transcriber;
+}
+
+// Орчуулагч загвар (NLLB) ачаалах: англиас монгол руу
+let translator = null;
+async function loadTranslator() {
+  // Аль хэдийн ачаалсан бол дахин ачаалахгүй
+  if (translator) return translator;
+  setStatus("Орчуулах загвар ачаалж байна (эхний удаа интернет хэрэгтэй)...");
+  // NLLB-200 жижиг хувилбар, браузер дээр ажиллана
+  translator = await pipeline("translation", "Xenova/nllb-200-distilled-600M", {
+    progress_callback: (p) => {
+      if (p.status === "progress") setStatus(`Орчуулах загвар татаж байна: ${Math.round(p.progress)}%`);
+    },
+  });
+  return translator;
+}
+
+// Видеоны дууг 16kHz моно болгож авах (Whisper-ийн шаардлага)
+async function getAudio(file) {
+  // Файлыг ArrayBuffer болгож унших
+  const buf = await file.arrayBuffer();
+  // Аудио контекст үүсгэх (16kHz)
+  const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+  // Дууг декодлох (видеоны audio track-ийг ч авна)
+  const audio = await ctx.decodeAudioData(buf);
+  // Моно сувгийг авах
+  return audio.getChannelData(0);
+}
+
+// Секундыг SRT цагийн формат руу хөрвүүлэх (00:00:00,000)
+function toSrtTime(sec) {
+  // Цаг, минут, секунд, миллисекунд тооцоолох
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  const ms = Math.round((sec - Math.floor(sec)) * 1000);
+  // Тэг нэмж хоёр/гурван оронтой болгох
+  const p = (n, l = 2) => String(n).padStart(l, "0");
+  return `${p(h)}:${p(m)}:${p(s)},${p(ms, 3)}`;
+}
+
+// Танигдсан сегментүүдийг SRT текст болгох
+function buildSrt(list) {
+  // Сегмент бүрийг дугаар, цаг, текстээр нь бүрдүүлэх
+  return list
+    .map((seg, i) => `${i + 1}\n${toSrtTime(seg.start)} --> ${toSrtTime(seg.end)}\n${seg.text.trim()}\n`)
+    .join("\n");
+}
+
+// "Субтитр гаргах" товч дарагдах үед
+runBtn.addEventListener("click", async () => {
+  // Файлгүй бол зогсоох
+  if (!selectedFile) return;
+  runBtn.disabled = true;
+  dlBtn.disabled = true;
+  try {
+    // Загвараа ачаалах
+    const asr = await loadModel(modelEl.value);
+    // Дууг авах
+    setStatus("Дууг боловсруулж байна...");
+    const audio = await getAudio(selectedFile);
+    setStatus("Яриаг танж байна (урт видео удаан байж болно)...");
+    // Whisper-д хэл, цагийн тэмдэгт тохируулах
+    // Орчуулгын горим бол Whisper-ийг англи хэлээр ажиллуулна
+    const isTranslate = langEl.value === "en2mn";
+    const result = await asr(audio, {
+      language: isTranslate ? "en" : langEl.value, // Ярианы хэл (орчуулгад англи)
+      task: "transcribe",          // Ярианыг тэр хэлээрээ текст болгох
+      return_timestamps: true,     // Цагийн тэмдэгт авах
+      chunk_length_s: 30,          // 30 секундийн хэсгээр боловсруулах (санах ойд ачаалал багасна)
+      stride_length_s: 5,          // Хэсгүүдийн давхцал (үгийн тасралтаас сэргийлнэ)
+    });
+    // Үр дүнг сегмент болгон хадгалах
+    segments = (result.chunks || []).map((c) => ({
+      start: c.timestamp[0] ?? 0,
+      end: c.timestamp[1] ?? (c.timestamp[0] ?? 0) + 2,
+      text: c.text,
+    }));
+    // Орчуулгын горим бол сегмент бүрийг монголоор орчуулах
+    if (isTranslate && segments.length) {
+      const tr = await loadTranslator();
+      for (let i = 0; i < segments.length; i++) {
+        setStatus(`Орчуулж байна: ${i + 1} / ${segments.length}`);
+        // Англи → монгол (кирилл): NLLB-ийн кодоор заана
+        const out = await tr(segments[i].text.trim(), {
+          src_lang: "eng_Latn",
+          tgt_lang: "khk_Cyrl",
+        });
+        segments[i].text = out[0].translation_text;
+      }
+    }
+    // Текстээ харуулах
+    output.value = segments.map((s) => s.text.trim()).join(" ");
+    dlBtn.disabled = segments.length === 0;
+    setStatus(`Дууслаа. ${segments.length} хэсэг танигдлаа. Засаад SRT татаж болно.`);
+  } catch (err) {
+    // Алдааг харуулах
+    console.error(err);
+    setStatus("Алдаа гарлаа: " + err.message);
+  } finally {
+    // Товчийг дахин идэвхжүүлэх
+    runBtn.disabled = false;
+  }
+});
+
+// "SRT татах" товч: засварласан текстээр SRT файл үүсгэх
+dlBtn.addEventListener("click", () => {
+  // Текст засагдсан бол сегментийг нэг хэсэг болгож шинэчлэх (энгийн арга)
+  const lines = output.value.split(/(?<=[.!?])\s+/).filter(Boolean);
+  // Хугацааг сегментүүдээс тараах
+  const total = segments.length ? segments[segments.length - 1].end : lines.length * 3;
+  const step = total / Math.max(lines.length, 1);
+  // Шинэ сегментүүд үүсгэх
+  const edited = lines.map((text, i) => ({ start: i * step, end: (i + 1) * step, text }));
+  // SRT файл үүсгэж татах
+  const blob = new Blob([buildSrt(edited)], { type: "text/plain;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "subtitle.srt";
+  a.click();
+});
+
+// Микрофоны бичлэгийн төлөв
+const recBtn = document.getElementById("recBtn");
+const speakBtn = document.getElementById("speakBtn");
+let recorder = null;
+let chunks = [];
+
+// Шууд бичих төлөв
+let liveStream = null;      // Микрофоны урсгал
+let liveRunning = false;    // Бичиж байгаа эсэх
+let currentRec = null;      // Одоо бичиж буй MediaRecorder
+let blobQueue = [];         // Танигдах хүлээгдэж буй дуун хэсгүүд
+let busy = false;           // Танилт явагдаж байгаа эсэх
+const SEG_MS = 8000;        // Нэг хэсгийн урт (миллисекунд)
+
+// Нэг хэсгийг (SEG_MS) бичээд blob болгож буцаах
+function recordSegment(stream) {
+  return new Promise((resolve) => {
+    // Энэ хэсгийн дууг хадгалах массив
+    const parts = [];
+    const rec = new MediaRecorder(stream);
+    currentRec = rec;
+    rec.ondataavailable = (e) => { if (e.data.size) parts.push(e.data); };
+    // Хэсэг дууссан үед blob болгож буцаах
+    rec.onstop = () => resolve(new Blob(parts, { type: "audio/webm" }));
+    rec.start();
+    // Тодорхой хугацааны дараа хэсгийг зогсоох
+    setTimeout(() => { if (rec.state === "recording") rec.stop(); }, SEG_MS);
+  });
+}
+
+// Хүлээгдэж буй хэсгүүдийг нэг нэгээр текст болгох
+async function processQueue() {
+  // Аль хэдийн явж байвал давхар ажиллуулахгүй
+  if (busy) return;
+  busy = true;
+  try {
+    while (blobQueue.length) {
+      const blob = blobQueue.shift();
+      // Хэсгийг файл болгон дууг 16kHz-ээр авах
+      const audio = await getAudio(new File([blob], "part.webm"));
+      const asr = await loadModel(modelEl.value);
+      const isTranslate = langEl.value === "en2mn";
+      const result = await asr(audio, {
+        language: isTranslate ? "en" : langEl.value,
+        task: "transcribe",
+      });
+      let text = (result.text || "").trim();
+      // Орчуулгын горим бол монголоор орчуулах
+      if (isTranslate && text) {
+        const tr = await loadTranslator();
+        const out = await tr(text, { src_lang: "eng_Latn", tgt_lang: "khk_Cyrl" });
+        text = out[0].translation_text;
+      }
+      // Танигдсан текстийг нэмэх (засварлах боломжтой хэвээр)
+      // Хэсэг бүр тусдаа мөрөнд гарна (хоосон биш бол)
+      if (text) output.value += (output.value ? "\n" : "") + text;
+    }
+  } catch (err) {
+    setStatus("Алдаа гарлаа: " + err.message);
+  }
+  busy = false;
+}
+
+// Бичлэгийн гол давтамж: хэсэг бүрийг бичээд ар талд танина
+async function liveLoop() {
+  while (liveRunning) {
+    const blob = await recordSegment(liveStream);
+    if (blob.size) blobQueue.push(blob);
+    processQueue();
+  }
+  // Зогссоны дараа үлдсэн хэсгүүдийг дуусгах
+  await processQueue();
+  liveStream.getTracks().forEach((t) => t.stop());
+  setStatus("Бичлэг дууслаа. Текстээ засаад SRT татаж болно.");
+  dlBtn.disabled = output.value.trim() === "";
+}
+
+// "Дуу бичих" товч: эхлүүлэх / зогсоох
+recBtn.addEventListener("click", async () => {
+  // Бичиж байгаа бол зогсоох
+  if (liveRunning) {
+    liveRunning = false;
+    if (currentRec && currentRec.state === "recording") currentRec.stop();
+    recBtn.textContent = "🎙 Дуу бичих";
+    setStatus("Зогсоож байна, сүүлийн хэсгийг танина...");
+    return;
+  }
+  try {
+    // Микрофоны зөвшөөрөл авах
+    liveStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // Загварыг урьдчилан ачаалах
+    await loadModel(modelEl.value);
+    output.value = "";
+    liveRunning = true;
+    recBtn.textContent = "⏹ Зогсоох";
+
+    // Дууны түвшин хэмжих: микрофоноос ирсэн дохиог шинжилнэ
+    const actx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = actx.createMediaStreamSource(liveStream);
+    const analyser = actx.createAnalyser();
+    analyser.fftSize = 512;
+    src.connect(analyser);
+    const data = new Uint8Array(analyser.fftSize);
+    const bar = document.getElementById("meterBar");
+    const timerEl = document.getElementById("timer");
+    const startT = Date.now();
+
+    // Хэмжигчийг секунд тутамд олон удаа шинэчлэх давталт
+    const tick = () => {
+      if (!liveRunning) {
+        // Бичлэг зогссон бол хэмжигчийг тэглэх
+        bar.style.width = "0%";
+        actx.close();
+        return;
+      }
+      // Дохионы дундаж далайц тооцоолох
+      analyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (const v of data) sum += Math.abs(v - 128);
+      const level = Math.min(100, (sum / data.length) * 4);
+      bar.style.width = level + "%";
+      // Явсан хугацааг минут:секундээр харуулах
+      const sec = Math.floor((Date.now() - startT) / 1000);
+      timerEl.textContent = `Бичиж байна: ${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+      requestAnimationFrame(tick);
+    };
+    tick();
+    setStatus("Ярина уу... Текст хэсэг хэсгээрээ гарна.");
+    liveLoop();
+  } catch (err) {
+    // Микрофон нээгдээгүй бол алдааг харуулах
+    setStatus("Микрофон нээгдсэнгүй: " + err.message);
+  }
+});
+
+// "Уншуулах" товч: текстийг монгол дуугаар уншина
+speakBtn.addEventListener("click", () => {
+  // Браузерын дуу уншуулах боломжтой эсэх
+  if (!("speechSynthesis" in window)) {
+    setStatus("Энэ браузер дуугаар уншуулахыг дэмжихгүй.");
+    return;
+  }
+  // Өмнөх уншилтыг зогсоох
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(output.value);
+  // Монгол хэлний дуу сонгох (төхөөрөмжөөс хамаарна)
+  u.lang = "mn-MN";
+  const voice = speechSynthesis.getVoices().find((v) => v.lang.startsWith("mn"));
+  if (voice) u.voice = voice;
+  else setStatus("Монгол дуу олдсонгүй. Төхөөрөмжийн хэлний тохиргоонд нэмж болно.");
+  speechSynthesis.speak(u);
+});
+
+// Монгол кирилл гарын товчлуурууд
+const mnLetters = "АБВГДЕЁЖЗИЙКЛМНОӨПРСТУҮФХЦЧШЩЪЫЬЭЮЯ".split("");
+const keysEl = document.getElementById("mnKeys");
+// Үсэг бүрт товч үүсгэх
+mnLetters.forEach((ch) => {
+  // Товч элемент үүсгэх
+  const b = document.createElement("button");
+  b.textContent = ch;
+  // Дарахад текст талбарт үсэг нэмэх
+  b.addEventListener("click", () => {
+    output.value += ch;
+    output.focus();
+  });
+  keysEl.appendChild(b);
+});
+// Цагаан зай ба устгах товч
+const space = document.createElement("button");
+space.textContent = "Зай";
+space.addEventListener("click", () => { output.value += " "; output.focus(); });
+keysEl.appendChild(space);
+const del = document.createElement("button");
+del.textContent = "⌫";
+del.addEventListener("click", () => { output.value = output.value.slice(0, -1); output.focus(); });
+keysEl.appendChild(del);
+</script>
+</body>
+</html>
